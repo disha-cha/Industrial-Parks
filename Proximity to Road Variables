@@ -1,0 +1,833 @@
+# Install required packages if not already installed
+install.packages(c("sf", "dplyr", "ggplot2", "nngeo", "FNN"))
+
+# Load libraries
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(parallel)
+library(data.table)
+library(FNN)
+library(nngeo)
+
+
+### 1: Shapefile Image Generation ###
+
+## Define the Paths
+base_path <- "Agglomeration/0_raw_data/Shape Files/India Highways tif maps/Highways, Medium and Tiny Roads (Shapefiles and figures) - 1988-2011/"
+country_boundary_path <- "Agglomeration/0_raw_data/Shape Files/in_boundary_2015/"
+
+
+## Read the Country Boundary
+country_boundary <- read_sf(paste0(country_boundary_path, 'IND_adm0.shp'))
+
+
+## Function to Plot Shapefiles
+plot_shapefile <- function(shapefile, year, type) {
+  shapefile <- st_transform(shapefile, st_crs(country_boundary)) # Ensure CRS match
+  shapefile_within_boundary <- st_intersection(shapefile, country_boundary)
+  ggplot() +
+    geom_sf(data = country_boundary, fill = "white", color = "black") +
+    geom_sf(data = shapefile_within_boundary, color = "black") +
+    theme_void() +
+    theme(legend.position = "none")
+}
+plot_shapefile <- function(shapefile, year, type, boundary_column = "COUNTRY") {
+  
+  
+  ggplot() +
+    geom_sf(data = shapefile, fill = "white", color = "black") +
+    geom_sf(data = shapefile, color = "red") +
+    theme_void() +
+    theme(legend.position = "none") +
+    labs(title = paste(type, "in", year))
+}
+
+## Create Maps Directory if not Exists
+if (!dir.exists("maps")) {
+  dir.create("maps")
+}
+
+
+## Shapefile Load (Note: Not Done with a Loop due to Inconsistent File Paths)
+# Note: highways here are old model
+shapefiles <- list(
+  highways_1988 = read_sf(paste0(base_path, '1988/Highways/Geocoded Shapefile/highway_borders_1988_geocoded.shp')),
+  medium_roads_1988 = read_sf(paste0(base_path, '1988/Medium Roads/Geocoded Shapefile/medium_borders_1988_geocoded.shp')),
+  tiny_roads_1988 = read_sf(paste0(base_path, '1988/Tiny Roads/Geocoded Shapefile/tiny_borders_1988_geocoded.shp')),
+  
+  highways_1996 = read_sf(paste0(base_path, '1996/Highways/Geocoded Shapefiles/highways_1996_geocoded.shp')),
+  medium_roads_1996 = read_sf(paste0(base_path, '1996/Medium/Geocoded Shapefiles/medium_borders_1996_geocoded.shp')),
+  tiny_roads_1996 = read_sf(paste0(base_path, '1996/Tiny/Geocoded Shapefile/tiny_borders_1996_geocoded.shp')),
+  
+
+  highways_2001 = read_sf(paste0('2001/2001/Geocoded shapefiles/Highway/highways_2001_geocoded.shp')),
+  medium_roads_2001 = read_sf(paste0('2001/2001/Geocoded shapefiles/Medium/mediums_2001_geocoded.shp')),
+  tiny_roads_2001 = read_sf(paste0('2001/2001/Geocoded shapefiles/Tiny/tinys_2001_geocoded.shp')),
+  
+  highways_2004 = read_sf(paste0('2004/2004/Geocoded shapefiles/Highways/2004_highways.shp')),
+  medium_roads_2004 = read_sf(paste0('2004/2004/Geocoded shapefiles/Medium/2004_medium.shp')),
+  tiny_roads_2004 = read_sf(paste0('2004/2004/Geocoded shapefiles/Tiny/2004_tiny.shp')),
+  
+  highways_2011 = read_sf(paste0('2011/2011/Highways/Geocoded shapefiles/highways_2011_mirrored_geocoded.shp')),
+  medium_roads_2011 = read_sf(paste0('2011/2011/Medium/Geocoded shapefiles/mediums_2011_mirrored_geocoded.shp')),
+  tiny_roads_2011 = read_sf(paste0('2011/2011/Tiny/Geocoded shapefile/tinys_2011_mirrored_geocoded.shp'))
+  
+  
+  )
+
+## Plot and Save Shapefiles for each Year and Road Type
+ggsave(plot_shapefile(shapefiles$medium_roads_1988, 1988, "medium_roads"), filename = "maps/medium_roads_1988.png")
+ggsave(plot_shapefile(shapefiles$tiny_roads_1988, 1988, "tiny_roads"), filename = "maps/tiny_roads_1988.png")
+
+ggsave(plot_shapefile(shapefiles$medium_roads_1996, 1996, "medium_roads"), filename = "maps/medium_roads_1996.png")
+ggsave(plot_shapefile(shapefiles$tiny_roads_1996, 1996, "tiny_roads"), filename = "maps/tiny_roads_1996.png")
+
+ggsave(plot_shapefile(shapefiles$medium_roads_2001, 2001, "medium_roads"), filename = "maps/medium_roads_2001.png")
+ggsave(plot_shapefile(shapefiles$tiny_roads_2001, 2001, "tiny_roads"), filename = "maps/tiny_roads_2001.png")
+
+ggsave(plot_shapefile(shapefiles$medium_roads_2004, 2004, "medium_roads"), filename = "maps/medium_roads_2004.png")
+ggsave(plot_shapefile(shapefiles$tiny_roads_2004, 2004, "tiny_roads"), filename = "maps/tiny_roads_2004.png")
+
+ggsave(plot_shapefile(shapefiles$medium_roads_2011, 2011, "medium_roads"), filename = "maps/medium_roads_2011.png")
+ggsave(plot_shapefile(shapefiles$tiny_roads_2011, 2011, "tiny_roads"), filename = "maps/tiny_roads_2011.png")
+
+
+### 2: Get Shrid2 Polygons and Centroids ###
+
+## Read SHRUG data (Note: I unzipped the 'zipped' sub-folders in my file explorer when I downloaded it)
+shrug_polygons <- read_sf('Agglomeration/0_raw_data/SHRUG_update060723/Shapefiles/zipped/shrug-shrid-poly-shp/shrid2_open.shp')
+shrug_centroids <- read.csv('Agglomeration/1_clean_data/shrug/shrid_centroids.csv')
+
+
+
+### 3: Create Vars with the Centroids ###
+
+
+## Convert shrug_centroids to data.table
+shrug_centroids_dt <- as.data.table(shrug_centroids)
+setkey(shrug_centroids_dt, shrid2)
+
+## Make Sure all Shapefiles are in the Same CRS
+shapefiles <- lapply(shapefiles, st_transform, crs = 4326)
+
+## Function to Process a Chunk of Data for a Single Road Type
+process_chunk <- function(chunk, roads, year, road_type) {
+  chunk_sf <- st_as_sf(chunk, coords = c("lon", "lat"), crs = 4326)
+  
+  distances <- st_distance(chunk_sf, roads)
+  min_distances <- apply(distances, 1, min)
+  
+  result <- data.table(
+    shrid2 = chunk$shrid2,
+    distance = as.numeric(min_distances)
+  )
+  
+  setnames(result, "distance", paste0("centr_dist_", road_type, "_", year))
+  
+  for (radius in c(5000, 10000, 15000, 20000, 25000)) {
+    binary_col <- paste0("centr_is_", road_type, "_", radius/1000, "km_", year)
+    result[, (binary_col) := as.integer(get(paste0("centr_dist_", road_type, "_", year)) <= radius)]
+  }
+  
+  return(result)
+}
+
+## Function to Process all Road Types for a Chunk
+process_all_roads <- function(chunk) {
+  results <- list(
+    process_chunk(chunk, shapefiles$highways_1988, 1988, "hig"),
+    process_chunk(chunk, shapefiles$highways_1996, 1996, "hig"),
+    process_chunk(chunk, shapefiles$highways_2001, 2001, "hig"),
+    process_chunk(chunk, shapefiles$highways_2004, 2004, "hig"),
+    process_chunk(chunk, shapefiles$highways_2011, 2011, "hig"),
+    process_chunk(chunk, shapefiles$medium_roads_1988, 1988, "med"),
+    process_chunk(chunk, shapefiles$medium_roads_1996, 1996, "med"),
+    process_chunk(chunk, shapefiles$medium_roads_2001, 2001, "med"),
+    process_chunk(chunk, shapefiles$medium_roads_2004, 2004, "med"),
+    process_chunk(chunk, shapefiles$medium_roads_2011, 2011, "med"),
+    process_chunk(chunk, shapefiles$tiny_roads_1988, 1988, "tin"),
+    process_chunk(chunk, shapefiles$tiny_roads_1996, 1996, "tin"),
+    process_chunk(chunk, shapefiles$tiny_roads_2001, 2001, "tin"),
+    process_chunk(chunk, shapefiles$tiny_roads_2004, 2004, "tin"),
+    process_chunk(chunk, shapefiles$tiny_roads_2011, 2011, "tin")
+  )
+  
+  Reduce(function(x, y) merge(x, y, by = "shrid2", all = TRUE), results)
+}
+
+## Process Data in Chunks
+chunk_size <- 50000  # Adjust based on your system's capacity
+n_chunks <- ceiling(nrow(shrug_centroids_dt) / chunk_size)
+
+all_vars <- data.table()
+
+for (i in 1:n_chunks) {
+  cat("Processing chunk", i, "of", n_chunks, "\n")
+  start_idx <- (i-1) * chunk_size + 1
+  end_idx <- min(i * chunk_size, nrow(shrug_centroids_dt))
+  
+  chunk <- shrug_centroids_dt[start_idx:end_idx]
+  chunk_result <- process_all_roads(chunk)
+  
+  all_vars <- rbindlist(list(all_vars, chunk_result), use.names = TRUE, fill = TRUE)
+}
+
+## Merge Back with Original Data
+final_result <- shrug_centroids_dt[all_vars, on = "shrid2"]
+
+## Save the Result
+fwrite(final_result, "road_distances_and_binary_with_2011.csv")
+
+# For Highways
+final_result <- road_distances_and_binary_with_2011
+library(dplyr)
+
+# For Highways
+final_result_highways <- final_result %>% select(contains("hig"))
+
+# For Medium Roads
+final_result_medium <- final_result %>% select(contains("med"))
+
+# For Tiny Roads
+final_result_tiny <- final_result %>% select(contains("tin"))
+
+
+
+
+### 4: Make Polygon Variables ###
+
+
+# Filter out invalid geometries
+shrug_polygons <- shrug_polygons %>% 
+  filter(st_is_valid(geometry))
+
+
+# Ensure all shapefiles are in the same CRS and filter out invalid geometries
+shapefiles <- lapply(shapefiles, function(x) {
+  x %>% 
+    st_transform(crs = st_crs(shrug_polygons)) %>%
+    filter(st_is_valid(geometry))
+})
+
+
+# Function to process polygons for a single road type
+process_polygons <- function(polygons, roads, year, road_type) {
+  tryCatch({
+    # Use st_intersects to find which roads intersect with the polygons
+    intersections <- st_intersects(polygons, roads)
+    
+    # Calculate the total length of intersecting roads for each polygon
+    total_lengths <- sapply(intersections, function(x) {
+      if (length(x) > 0) {
+        sum(st_length(st_intersection(polygons[rep(1, length(x)),], roads[x,])))
+      } else {
+        0
+      }
+    })
+    
+    # Create summary
+    result <- data.frame(
+      shrid2 = polygons$shrid2,
+      has_road = total_lengths > 0,
+      total_length = as.numeric(total_lengths),
+      area = as.numeric(st_area(polygons)),
+      density = as.numeric(total_lengths / st_area(polygons))
+    )
+    
+    # Rename columns
+    setnames(result, 
+             c("has_road", "density"), 
+             c(paste0("poly_has_", road_type, "_", year),
+               paste0("poly_density_", road_type, "_", year)))
+    
+    return(result[, c("shrid2", 
+                      paste0("poly_has_", road_type, "_", year), 
+                      paste0("poly_density_", road_type, "_", year))])
+  }, error = function(e) {
+    message("Error in processing: ", e$message)
+    return(NULL)
+  })
+}
+
+
+# Function to process all road types
+process_all_roads <- function(polygons) {
+  results <- list(
+    process_polygons(polygons, shapefiles$highways_1988, 1988, "hig"),
+    process_polygons(polygons, shapefiles$highways_1996, 1996, "hig"),
+    process_polygons(polygons, shapefiles$highways_2001, 2001, "hig"),
+    process_polygons(polygons, shapefiles$highways_2004, 2004, "hig"),
+    process_polygons(polygons, shapefiles$medium_roads_1988, 1988, "med"),
+    process_polygons(polygons, shapefiles$medium_roads_1996, 1996, "med"),
+    process_polygons(polygons, shapefiles$medium_roads_2001, 2001, "med"),
+    process_polygons(polygons, shapefiles$medium_roads_2004, 2004, "med"),
+    process_polygons(polygons, shapefiles$tiny_roads_1988, 1988, "tin"),
+    process_polygons(polygons, shapefiles$tiny_roads_1996, 1996, "tin"),
+    process_polygons(polygons, shapefiles$tiny_roads_2001, 2001, "tin"),
+    process_polygons(polygons, shapefiles$tiny_roads_2004, 2004, "tin"),
+    process_polygons(polygons, shapefiles_2011$highways_2011, 2011, "hig"),
+    process_polygons(polygons, shapefiles_2011$medium_roads_2011, 2011, "med"),
+    process_polygons(polygons, shapefiles_2011$tiny_roads_2011, 2011, "tin")
+  )
+  
+  results <- results[!sapply(results, is.null)]
+  
+  if (length(results) > 0) {
+    return(Reduce(function(x, y) merge(x, y, by = "shrid2", all = TRUE), results))
+  } else {
+    return(NULL)
+  }
+}
+
+# Process data in chunks
+chunk_size <- 1000  # Adjust based on your system's capacity
+n_chunks <- ceiling(nrow(shrug_polygons) / chunk_size)
+
+all_vars <- data.table()
+problem_polygons <- data.table()
+
+for (i in 1:n_chunks) {
+  cat("Processing chunk", i, "of", n_chunks, "\n")
+  start_idx <- (i-1) * chunk_size + 1
+  end_idx <- min(i * chunk_size, nrow(shrug_polygons))
+  
+  chunk_polygons <- shrug_polygons[start_idx:end_idx,]
+  chunk_result <- process_all_roads(chunk_polygons)
+  
+  if (!is.null(chunk_result)) {
+    all_vars <- rbindlist(list(all_vars, chunk_result), use.names = TRUE, fill = TRUE)
+  } else {
+    cat("Chunk", i, "failed. Processing individual polygons.\n")
+    for (j in 1:nrow(chunk_polygons)) {
+      single_polygon <- chunk_polygons[j,]
+      single_result <- process_all_roads(single_polygon)
+      if (!is.null(single_result)) {
+        all_vars <- rbindlist(list(all_vars, single_result), use.names = TRUE, fill = TRUE)
+      } else {
+        problem_polygons <- rbindlist(list(problem_polygons, data.table(shrid2 = single_polygon$shrid2, chunk = i, row = j)), use.names = TRUE)
+      }
+    }
+  }
+  
+}
+
+# Save the final results
+fwrite(all_vars, "road_polygon_variables.csv")
+saveRDS(all_vars, "road_polygon_variables.rds")
+
+all_vars <- road_polygon_variables
+# For Highways
+all_vars_highways <- all_vars %>% select(contains("hig"))
+
+# For Medium Roads
+all_vars_medium <- all_vars %>% select(contains("med"))
+
+# For Tiny Roads
+all_vars_tiny <- all_vars %>% select(contains("tin"))
+
+
+
+# Save the final results
+fwrite(all_vars, "highway_polygon_variables.csv")
+saveRDS(all_vars, "highway_polygon_variables.rds")
+
+# Create the final result with shrid2 included
+all_vars_highways <- all_vars %>% 
+  select(shrid2, contains("hig"))
+
+all_vars_tiny<- all_vars %>%
+  select(shrid2, contains("tin"))
+fwrite(all_vars_tiny, "tiny_polygon_variables.csv")
+
+
+
+# Load required libraries
+library(sf)
+library(dplyr)
+library(data.table)
+
+# Read SHRUG polygons
+shrug_polygons <- read_sf('Agglomeration/0_raw_data/SHRUG_update060723/Shapefiles/zipped/shrug-shrid-poly-shp/shrid2_open.shp')
+
+# Filter out invalid geometries
+shrug_polygons <- shrug_polygons %>% 
+  filter(st_is_valid(geometry))
+
+# Read highway shapefiles
+highways <- list(
+  highways_1988 = read_sf(paste0('1988/highway_1988_mirrored_referenced.shp')),
+  highways_1996 = read_sf(paste0('1996/highways_1996_mirrored_modified.shp')),
+  highways_2001 = read_sf(paste0('2001_new/highways_2001_mirrored_referenced.shp')),
+  highways_2011 = read_sf(paste0('2011_new/highways_2011_mirrored_referenced.shp'))
+)
+
+# Ensure all shapefiles are in the same CRS and filter out invalid geometries
+highways <- lapply(highways, function(x) {
+  x %>% 
+    st_transform(crs = st_crs(shrug_polygons)) %>%
+    filter(st_is_valid(geometry))
+})
+
+# Function to process polygons for highways
+process_highways <- function(polygons, roads, year) {
+  tryCatch({
+    if (is.null(roads) || nrow(roads) == 0) {
+      warning(paste("No road data for year", year))
+      return(NULL)
+    }
+    
+    # Use st_intersects to find which roads intersect with the polygons
+    intersections <- st_intersects(polygons, roads)
+    
+    # Calculate the total length of intersecting roads for each polygon
+    total_lengths <- sapply(intersections, function(x) {
+      if (length(x) > 0) {
+        sum(st_length(st_intersection(polygons[rep(1, length(x)),], roads[x,])))
+      } else {
+        0
+      }
+    })
+    
+    # Create summary
+    result <- data.frame(
+      shrid2 = polygons$shrid2,
+      has_road = total_lengths > 0,
+      total_length = as.numeric(total_lengths),
+      area = as.numeric(st_area(polygons)),
+      density = as.numeric(total_lengths / st_area(polygons))
+    )
+    
+    # Rename columns
+    setnames(result, 
+             c("has_road", "density"), 
+             c(paste0("poly_has_hig_", year),
+               paste0("poly_density_hig_", year)))
+    
+    return(result[, c("shrid2", 
+                      paste0("poly_has_hig_", year), 
+                      paste0("poly_density_hig_", year))])
+  }, error = function(e) {
+    warning(paste("Error processing highways for year", year, ":", e$message))
+    return(NULL)
+  })
+}
+
+# Function to process all highway years
+process_all_highways <- function(polygons) {
+  results <- lapply(names(highways), function(highway_name) {
+    year <- as.numeric(substr(highway_name, nchar(highway_name)-3, nchar(highway_name)))
+    process_highways(polygons, highways[[highway_name]], year)
+  })
+  
+  results <- results[!sapply(results, is.null)]
+  
+  if (length(results) > 0) {
+    return(Reduce(function(x, y) merge(x, y, by = "shrid2", all = TRUE), results))
+  } else {
+    return(NULL)
+  }
+}
+
+# Process data in chunks
+chunk_size <- 1000  # Adjust based on your system's capacity
+n_chunks <- ceiling(nrow(shrug_polygons) / chunk_size)
+
+
+# Remove NULL entries from highways list
+highways <- highways[!sapply(highways, is.null)]
+
+
+all_vars <- data.table()
+problem_polygons <- data.table()
+
+for (i in 1:n_chunks) {
+  cat("Processing chunk", i, "of", n_chunks, "\n")
+  start_idx <- (i-1) * chunk_size + 1
+  end_idx <- min(i * chunk_size, nrow(shrug_polygons))
+  
+  chunk_polygons <- shrug_polygons[start_idx:end_idx,]
+  chunk_result <- process_all_highways(chunk_polygons)
+  
+  if (!is.null(chunk_result)) {
+    all_vars <- rbindlist(list(all_vars, chunk_result), use.names = TRUE, fill = TRUE)
+  } else {
+    cat("Chunk", i, "failed. Processing individual polygons.\n")
+    for (j in 1:nrow(chunk_polygons)) {
+      single_polygon <- chunk_polygons[j,]
+      single_result <- process_all_highways(single_polygon)
+      if (!is.null(single_result)) {
+        all_vars <- rbindlist(list(all_vars, single_result), use.names = TRUE, fill = TRUE)
+      } else {
+        problem_polygons <- rbindlist(list(problem_polygons, data.table(shrid2 = single_polygon$shrid2, chunk = i, row = j)), use.names = TRUE)
+      }
+    }
+  }
+}
+
+
+
+
+
+
+
+# Save the final highway results
+fwrite(all_vars_highways, "final_result_highways_polygons.csv")
+saveRDS(all_vars_highways, "final_result_highways_polygons.rds")
+
+
+
+
+
+
+# Load necessary libraries
+library(sf)
+library(dplyr)
+library(data.table)
+
+# Ensure all shapefiles are in the same CRS and filter out invalid geometries
+shapefiles <- list(
+  highways_1988 = st_transform(shapefiles$highways_1988, crs = st_crs(shrug_polygons)),
+  highways_1996 = st_transform(shapefiles$highways_1996, crs = st_crs(shrug_polygons)),
+  highways_2001 = st_transform(shapefiles$highways_2001, crs = st_crs(shrug_polygons)),
+  highways_2004 = st_transform(shapefiles$highways_2004, crs = st_crs(shrug_polygons)),
+  highways_2011 = st_transform(shapefiles$highways_2011, crs = st_crs(shrug_polygons))
+)
+
+# Process polygons for a single road type, specifically highways
+process_polygons_highway <- function(polygons, roads, year) {
+  tryCatch({
+    intersections <- st_intersects(polygons, roads, sparse = TRUE)
+    total_lengths <- sapply(seq_along(intersections), function(i) {
+      intersected_roads <- roads[intersections[[i]], ]
+      if (length(intersected_roads) > 0) {
+        sum(st_length(intersected_roads))
+      } else {
+        0
+      }
+    })
+    
+    result <- data.frame(
+      shrid2 = polygons$shrid2,
+      has_road = total_lengths > 0,
+      total_length = total_lengths,
+      area = st_area(polygons),
+      density = total_lengths / st_area(polygons)
+    )
+    
+    names(result)[2:5] <- c(paste0("poly_has_hig_", year),
+                            paste0("poly_density_hig_", year))
+    return(result)
+  }, error = function(e) {
+    message("Error processing chunk: ", e$message)
+    return(data.frame(shrid2 = polygons$shrid2))
+  })
+}
+
+# Processing polygons for all highway years
+process_all_highway_polygons <- function(polygons) {
+  results <- list(
+    process_polygons_highway(polygons, shapefiles$highways_1988, 1988),
+    process_polygons_highway(polygons, shapefiles$highways_1996, 1996),
+    process_polygons_highway(polygons, shapefiles$highways_2001, 2001),
+    process_polygons_highway(polygons, shapefiles$highways_2011, 2011)
+  )
+  
+  results <- do.call(cbind, results)
+  return(results)
+}
+
+# Processing data in chunks
+chunk_size <- 1000  # Adjust based on system capacity
+n_chunks <- ceiling(nrow(shrug_polygons) / chunk_size)
+all_vars_highways <- data.table()
+
+for (i in 1:n_chunks) {
+  cat("Processing chunk", i, "of", n_chunks, "\n")
+  start_idx <- (i-1) * chunk_size + 1
+  end_idx <- min(i * chunk_size, nrow(shrug_polygons))
+  
+  chunk_polygons <- shrug_polygons[start_idx:end_idx, ]
+  chunk_result <- process_all_highway_polygons(chunk_polygons)
+  
+  if (!is.null(chunk_result)) {
+    all_vars_highways <- rbind(all_vars_highways, data.table(chunk_result), fill = TRUE)
+  } else {
+    cat("Chunk", i, "failed.\n")
+  }
+}
+
+# Save the results
+fwrite(all_vars_highways, "highway_polygon_variables.csv")
+
+
+
+
+
+# Ensure CRS match and filter out invalid geometries
+highways_2004 <- highways_2004 %>% 
+  st_transform(crs = st_crs(shrug_polygons)) %>%
+  filter(st_is_valid(geometry))
+
+# Function to process polygons for 2004 highways
+process_2004_highways <- function(polygons, roads) {
+  tryCatch({
+    intersections <- st_intersects(polygons, roads)
+    
+    total_lengths <- sapply(intersections, function(x) {
+      if (length(x) > 0) {
+        sum(st_length(st_intersection(polygons[rep(1, length(x)),], roads[x,])))
+      } else {
+        0
+      }
+    })
+    
+    result <- data.frame(
+      shrid2 = polygons$shrid2,
+      poly_has_hig_2004 = total_lengths > 0,
+      poly_density_hig_2004 = as.numeric(total_lengths / st_area(polygons))
+    )
+    
+    return(result)
+  }, error = function(e) {
+    message("Error in processing: ", e$message)
+    return(NULL)
+  })
+}
+
+# Process data in chunks
+chunk_size <- 1000  # Adjust based on your system's capacity
+n_chunks <- ceiling(nrow(shrug_polygons) / chunk_size)
+
+new_2004_vars <- data.table()
+
+for (i in 1:n_chunks) {
+  cat("Processing chunk", i, "of", n_chunks, "\n")
+  start_idx <- (i-1) * chunk_size + 1
+  end_idx <- min(i * chunk_size, nrow(shrug_polygons))
+  
+  chunk_polygons <- shrug_polygons[start_idx:end_idx,]
+  chunk_result <- process_2004_highways(chunk_polygons, highways_2004)
+  
+  if (!is.null(chunk_result)) {
+    new_2004_vars <- rbindlist(list(new_2004_vars, chunk_result), use.names = TRUE, fill = TRUE)
+  } else {
+    cat("Chunk", i, "failed.\n")
+  }
+}
+
+# Load existing all_vars_highways if not in memory
+if (!exists("all_vars_highways")) {
+  all_vars_highways <- fread("final_result_highways_polygons.csv")
+}
+
+# Merge new 2004 data with existing data
+all_vars_highways <- merge(all_vars_highways, new_2004_vars, by = "shrid2", all = TRUE)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Load required libraries
+library(sf)
+library(dplyr)
+library(data.table)
+
+# Read SHRUG polygons if not already in memory
+if (!exists("shrug_polygons")) {
+  shrug_polygons <- read_sf('Agglomeration/0_raw_data/SHRUG_update060723/Shapefiles/zipped/shrug-shrid-poly-shp/shrid2_open.shp')
+  shrug_polygons <- shrug_polygons %>% 
+    filter(st_is_valid(geometry))
+}
+
+# Read 2004 highway shapefile
+highways_2004 <- read_sf('2004_new/highways_2004.shp')
+
+# Ensure CRS match and filter out invalid geometries
+highways_2004 <- highways_2004 %>% 
+  st_transform(crs = st_crs(shrug_polygons)) %>%
+  filter(st_is_valid(geometry))
+
+# Function to process polygons for 2004 highways
+process_2004_highways <- function(polygons, roads) {
+  tryCatch({
+    intersections <- st_intersects(polygons, roads)
+    
+    total_lengths <- sapply(intersections, function(x) {
+      if (length(x) > 0) {
+        sum(st_length(st_intersection(polygons[rep(1, length(x)),], roads[x,])))
+      } else {
+        0
+      }
+    })
+    
+    result <- data.frame(
+      shrid2 = polygons$shrid2,
+      poly_has_hig_2004 = total_lengths > 0,
+      poly_density_hig_2004 = as.numeric(total_lengths / st_area(polygons))
+    )
+    
+    return(result)
+  }, error = function(e) {
+    message("Error in processing: ", e$message)
+    return(NULL)
+  })
+}
+
+# Process data in chunks
+chunk_size <- 1000  # Adjust based on your system's capacity
+n_chunks <- ceiling(nrow(shrug_polygons) / chunk_size)
+
+new_2004_vars <- data.table()
+
+for (i in 1:n_chunks) {
+  cat("Processing chunk", i, "of", n_chunks, "\n")
+  start_idx <- (i-1) * chunk_size + 1
+  end_idx <- min(i * chunk_size, nrow(shrug_polygons))
+  
+  chunk_polygons <- shrug_polygons[start_idx:end_idx,]
+  chunk_result <- process_2004_highways(chunk_polygons, highways_2004)
+  
+  if (!is.null(chunk_result)) {
+    new_2004_vars <- rbindlist(list(new_2004_vars, chunk_result), use.names = TRUE, fill = TRUE)
+  } else {
+    cat("Chunk", i, "failed.\n")
+  }
+}
+
+# Load existing all_vars_highways if not in memory
+if (!exists("all_vars_highways")) {
+  all_vars_highways <- fread("final_result_highways_polygons.csv")
+}
+
+# Merge new 2004 data with existing data
+all_vars_highways <- merge(all_vars_highways, new_2004_vars, by = "shrid2", all = TRUE)
+
+# Save updated results
+fwrite(all_vars_highways, "final_result_highways_polygons_updated.csv")
+saveRDS(all_vars_highways, "final_result_highways_polygons_updated.rds")
+
+# Print summary
+cat("Updated all_vars_highways with 2004 data.\n")
+cat("New columns added: poly_has_hig_2004, poly_density_hig_2004\n")
+cat("Total rows in updated dataset:", nrow(all_vars_highways), "\n")+
+
+  
+  
+  
+  # Load required libraries
+  library(sf)
+library(dplyr)
+library(data.table)
+
+# Read SHRUG polygons if not already in memory
+if (!exists("shrug_polygons")) {
+  shrug_polygons <- read_sf('Agglomeration/0_raw_data/SHRUG_update060723/Shapefiles/zipped/shrug-shrid-poly-shp/shrid2_open.shp')
+  shrug_polygons <- shrug_polygons %>% 
+    filter(st_is_valid(geometry))
+}
+
+# Read 2011 medium and tiny road shapefiles
+medium_roads_2011 = read_sf(paste0('2011/2011/Medium/Geocoded shapefiles/mediums_2011_mirrored_geocoded.shp'))
+tiny_roads_2011 = read_sf(paste0('2011/2011/Tiny/Geocoded shapefile/tinys_2011_mirrored_geocoded.shp'))
+
+# Ensure CRS match and filter out invalid geometries
+medium_roads_2011 <- medium_roads_2011 %>% 
+  st_transform(crs = st_crs(shrug_polygons)) %>%
+  filter(st_is_valid(geometry))
+
+tiny_roads_2011 <- tiny_roads_2011 %>% 
+  st_transform(crs = st_crs(shrug_polygons)) %>%
+  filter(st_is_valid(geometry))
+
+# Function to process polygons for a specific road type
+process_roads <- function(polygons, roads, road_type) {
+  tryCatch({
+    intersections <- st_intersects(polygons, roads)
+    
+    total_lengths <- sapply(intersections, function(x) {
+      if (length(x) > 0) {
+        sum(st_length(st_intersection(polygons[rep(1, length(x)),], roads[x,])))
+      } else {
+        0
+      }
+    })
+    
+    result <- data.frame(
+      shrid2 = polygons$shrid2,
+      has_road = total_lengths > 0,
+      density = as.numeric(total_lengths / st_area(polygons))
+    )
+    
+    setnames(result, 
+             c("has_road", "density"), 
+             c(paste0("poly_has_", road_type, "_2011"),
+               paste0("poly_density_", road_type, "_2011")))
+    
+    return(result)
+  }, error = function(e) {
+    message("Error in processing: ", e$message)
+    return(NULL)
+  })
+}
+
+# Process data in chunks
+chunk_size <- 1000  # Adjust based on your system's capacity
+n_chunks <- ceiling(nrow(shrug_polygons) / chunk_size)
+
+new_medium_vars <- data.table()
+new_tiny_vars <- data.table()
+
+for (i in 1:n_chunks) {
+  cat("Processing chunk", i, "of", n_chunks, "\n")
+  start_idx <- (i-1) * chunk_size + 1
+  end_idx <- min(i * chunk_size, nrow(shrug_polygons))
+  
+  chunk_polygons <- shrug_polygons[start_idx:end_idx,]
+  
+  # Process medium roads
+  chunk_result_medium <- process_roads(chunk_polygons, medium_roads_2011, "med")
+  if (!is.null(chunk_result_medium)) {
+    new_medium_vars <- rbindlist(list(new_medium_vars, chunk_result_medium), use.names = TRUE, fill = TRUE)
+  }
+  
+  # Process tiny roads
+  chunk_result_tiny <- process_roads(chunk_polygons, tiny_roads_2011, "tin")
+  if (!is.null(chunk_result_tiny)) {
+    new_tiny_vars <- rbindlist(list(new_tiny_vars, chunk_result_tiny), use.names = TRUE, fill = TRUE)
+  }
+}
+
+# Load existing all_vars_medium and all_vars_tiny if not in memory
+if (!exists("all_vars_medium")) {
+  all_vars_medium <- fread("final_result_medium_roads_polygons.csv")
+}
+
+if (!exists("all_vars_tiny")) {
+  all_vars_tiny <- fread("final_result_tiny_roads_polygons.csv")
+}
+
+# Merge new 2011 data with existing data
+all_vars_medium <- merge(all_vars_medium, new_medium_vars, by = "shrid2", all = TRUE)
+all_vars_tiny <- merge(all_vars_tiny, new_tiny_vars, by = "shrid2", all = TRUE)
+
+# Save updated results
+fwrite(all_vars_medium, "final_result_medium_roads_polygons_updated.csv")
+fwrite(all_vars_tiny, "final_result_tiny_roads_polygons_updated.csv")
+
+# Print summary
+cat("Medium roads 2011 variables added:", ncol(new_medium_vars) - 1, "\n")
+cat("Tiny roads 2011 variables added:", ncol(new_tiny_vars) - 1, "\n")  
