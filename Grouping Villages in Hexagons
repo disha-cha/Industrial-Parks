@@ -1,0 +1,166 @@
+library(dplyr)
+library(sf)
+library(purrr)
+library(tidyverse)
+library(geosphere)
+
+# Read in data
+shrug_pc_panel <- data.frame(readRDS("~/shrug_pc_panel.rds"))
+shrid_pc11subdist_key <- read_dta("shrid_pc11subdist_key.dta")
+
+### Step 1 - Add district id to the shrug df
+shrug_info <- shrug_pc_panel %>%
+  left_join(shrid_pc11subdist_key %>% dplyr::select(shrid2, pc11_subdistrict_id), by = "shrid2", relationship = "many-to-many")
+shrug_info <- subset(shrug_info, select = -c(pca_mainwork_p, pca_main_cl_p, pca_main_al_p, pca_main_hh_p, pca_main_ot_p))
+
+### Step 2 - Filter by population
+# Filter to 1990 pops only
+shrug_info <- shrug_info[shrug_info$year == 1991,]
+shrug_info <- subset(shrug_info, select = -year)
+
+# Add centroid info
+shrid_centroids <- read_csv("shrid_centroids.csv")
+
+shrug_info_centroids <- shrug_info %>%
+  left_join(shrid_centroids %>% dplyr::select(shrid2, lat, lon), by = "shrid2")
+
+# Filter out null values
+shrug_info_centroids <- shrug_info_centroids %>%
+  filter(!is.na(pc11_subdistrict_id) & !is.na(lat) & !is.na(lon))
+
+### Step 3 - Build hexagon or square grid
+# Get the most populous villages w/in subdistricts
+most_populous_villages <- shrug_info_centroids %>%
+  group_by(pc11_subdistrict_id) %>%
+  filter(pca_tot_p == max(pca_tot_p)) %>%
+  slice_sample(n = 1) %>%  # Randomly select one row if there are ties
+  ungroup()
+
+
+# Define a function to create a hexagon
+create_hexagon <- function(center, radius) {
+  angles <- seq(0, 2*pi, length.out = 7) # 6 vertices + the starting point
+  hex_coords <- st_sfc(st_polygon(list(cbind(
+    center[1] + radius * cos(angles),
+    center[2] + radius * sin(angles)
+  ))), crs = 4326)
+  return(hex_coords)
+}
+
+# Define a function to create a square
+create_square <- function(center, radius) {
+  half_side <- radius / sqrt(2)
+  square_coords <- st_sfc(st_polygon(list(cbind(
+    center[1] + c(-half_side, half_side, half_side, -half_side, -half_side),
+    center[2] + c(-half_side, -half_side, half_side, half_side, -half_side)
+  ))), crs = 4326)
+  return(square_coords)
+}
+
+# Radius in kilometers (convert to degrees approximately)
+radius_km <- 2.5
+radius_deg <- radius_km / 111 # Rough conversion (1 degree latitude ~ 111 km)
+
+# Create grids for each most populous village
+most_populous_villages <- most_populous_villages %>%
+  rowwise() %>%
+  mutate(grid = create_hexagon(c(lon, lat), radius_deg)) %>%
+  ungroup()
+
+# Convert to sf object
+most_populous_villages_sf <- st_as_sf(most_populous_villages, coords = c("lon", "lat"), crs = 4326, agr = "constant")
+
+# Make sure that shrug_info_centroids is an sf object
+shrug_info_centroids <- st_as_sf(shrug_info_centroids, coords = c("lon", "lat"), crs = 4326, agr = "constant")
+
+### Step 4 - Generate grid
+# Function to generate grid (hexagon or square) for a given subdistrict
+generate_grid <- function(subdistrict_id, centroids, radius, grid_type = "hexagon") {
+  # Get all centroids in the subdistrict
+  centroids_subdistrict <- centroids %>%
+    filter(pc11_subdistrict_id == subdistrict_id)
+  
+  # Convert to sf object if it's not already
+  centroids_subdistrict <- st_as_sf(centroids_subdistrict)
+  
+  # Get bounding box of the centroids
+  bbox <- st_bbox(centroids_subdistrict)
+  
+  # Create grid covering the bounding box
+  grid <- st_make_grid(
+    st_as_sfc(bbox, crs = 4326),
+    cellsize = if (grid_type == "hexagon") radius * sqrt(3) else radius, # Adjust cellsize based on grid type
+    what = "polygons",
+    square = (grid_type == "square")
+  )
+  
+  # Convert to sf object and add grid IDs
+  grid_sf <- st_as_sf(grid) %>%
+    mutate(grid_id = paste0(subdistrict_id, "_", row_number()))
+  
+  return(grid_sf)
+}
+
+# Generate grids for each subdistrict
+grids <- most_populous_villages %>%
+  group_by(pc11_subdistrict_id) %>%
+  do(grid = generate_grid(.$pc11_subdistrict_id, shrug_info_centroids, radius_deg, grid_type = "hexagon")) %>% # Change grid_type as needed
+  ungroup()
+
+### Step 5 - Assign grids to each shrid
+# Function to assign shrid2 to grid
+assign_to_grid <- function(subdistrict_id, shrid2_sf, grids_sf) {
+  # Filter grids to the current subdistrict
+  grid_subdistrict <- grids_sf %>%
+    dplyr::filter(pc11_subdistrict_id == subdistrict_id) %>%
+    dplyr::select(grid) %>%
+    tidyr::unnest(cols = c(grid))
+  
+  # Convert grid_subdistrict to sf object if not already
+  grid_subdistrict <- st_as_sf(grid_subdistrict)
+  
+  # Perform the spatial join within the subdistrict
+  assigned <- st_join(shrid2_sf, grid_subdistrict, join = st_within) %>%
+    dplyr::filter(!is.na(grid_id))
+  
+  return(assigned)
+}
+
+# Assign each shrid2 to a grid
+assigned_grids <- shrug_info_centroids %>%
+  group_by(pc11_subdistrict_id) %>%
+  do(assign_to_grid(unique(.$pc11_subdistrict_id), ., grids)) %>%
+  ungroup()
+
+### Step 6 - Calculate grid centroids
+# Calculate centroids of grids
+# Extract the grid polygons and calculate centroids
+grid_centroids <- grids %>%
+  dplyr::select(grid) %>%
+  tidyr::unnest(cols = c(grid)) %>%
+  st_as_sf() %>%
+  mutate(centroid = st_centroid(x))
+
+# Extract coordinates from centroids
+centroid_coords <- st_coordinates(grid_centroids$centroid) %>%
+  as.data.frame() %>%
+  dplyr::rename(grid_lat = Y, grid_lon = X) %>%
+  dplyr::mutate(grid_id = grid_centroids$grid_id)
+
+# Convert point geometry back to lat and lon
+assigned_grids <- subset(assigned_grids, select = -c(geometry))
+assigned_grids <- assigned_grids %>%
+  left_join(shrid_centroids %>% dplyr::select(shrid2, lat, lon), by = "shrid2")
+
+# Add grid lat and lons
+assigned_grids <- assigned_grids %>%
+  left_join(centroid_coords, by = "grid_id")
+
+# Rename and reorder to get final result
+assigned_grids <- assigned_grids %>%
+  rename(shrid_lat = lat, shrid_lon = lon, pca_tot_p_1991 = pca_tot_p)
+final_result <- assigned_grids %>%
+  select(shrid2, pc11_subdistrict_id, pca_tot_p_1991, shrid_lat, shrid_lon, grid_id, grid_lat, grid_lon)
+
+# Print the final result
+print(final_result)
