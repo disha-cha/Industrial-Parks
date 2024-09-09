@@ -1,0 +1,81 @@
+library(tidyverse)
+library(magrittr)
+library(readxl)
+library(janitor)
+library(stringdist)
+
+# Load the data
+mca_registration_1990_2023 <- readRDS("before_keyword.rds")
+
+# Function to perform fuzzy matching
+fuzzy_match <- function(address, keywords, max_distance = 2) {
+  address_lower <- tolower(address)
+  matches <- sapply(keywords, function(keyword) {
+    min_dist <- min(stringdist(keyword, unlist(strsplit(address_lower, "\\s+"))))
+    return(min_dist <= max_distance)
+  })
+  return(matches)
+}
+
+# List of keywords for industrial parks
+industrial_park_keywords <- c(
+  "industrial", "indl", "industriial", "industiral", "indul", "dustrial",
+  "estate", "area", "zone", "park", "phase", "sez", "specialeconomic", "speeconomic",
+  "export promotion", "epz", "growthcentre", "growthcenter", "cluster", "complex",
+  "hub", "techpark", "co-op", "mega", "export", "manufacturing", "technology",
+  "businesspark", "ftwz", "infrastructuredevelopment"
+)
+
+# Perform fuzzy matching
+mca_registration_1990_2023 %<>%
+  mutate(
+    match_results = map(address, ~fuzzy_match(.x, industrial_park_keywords)),
+    park_type = map_chr(match_results, ~paste(industrial_park_keywords[.x], collapse = "|"))
+  ) %>%
+  select(-match_results)
+
+# Function to categorize park types
+categorize_park_type <- function(park_type) {
+  categories <- c(
+    "Industrial Area" = "industrial|indl|industriial|industiral|indul|dustrial",
+    "Special Economic Zone" = "sez|specialeconomic|speeconomic",
+    "Export Zone" = "export|epz",
+    "Technology Park" = "techpark|technology",
+    "Business Park" = "businesspark",
+    "Growth Centre" = "growthcentre|growthcenter",
+    "Manufacturing Zone" = "manufacturing",
+    "Other" = "estate|area|zone|park|phase|cluster|complex|hub|co-op|mega|ftwz|infrastructuredevelopment"
+  )
+  
+  for (cat_name in names(categories)) {
+    if (str_detect(park_type, categories[[cat_name]])) {
+      return(cat_name)
+    }
+  }
+  return("Not Industrial Park")
+}
+
+# Apply categorization
+mca_registration_1990_2023 %<>%
+  mutate(park_category = map_chr(park_type, categorize_park_type))
+
+# Analyze results
+park_type_summary <- mca_registration_1990_2023 %>%
+  group_by(park_category, year) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(year, desc(count))
+
+# Plot results
+ggplot(park_type_summary, aes(x = year, y = count, fill = park_category)) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_minimal() +
+  labs(title = "Industrial Park Registrations Over Time",
+       x = "Year", y = "Number of Registrations",
+       fill = "Park Category") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Save results
+saveRDS(mca_registration_1990_2023, "mca_registration_1990_2023_fuzzy_matched.rds")
+ggsave("industrial_park_registrations_over_time.png", width = 12, height = 8)
+
+print(park_type_summary)
