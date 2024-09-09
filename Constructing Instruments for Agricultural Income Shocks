@@ -1,0 +1,120 @@
+install.packages("dplyr")
+library(dplyr)
+
+
+### Function 1####
+
+df_fhp <- rename(dt_fhp_a_web)
+df_area_prod <- rename(dt_area_prod_a_web)
+
+area_prod_crops <- c("RICE_TA", "RICE_TQ", "WHT_TA", "WHT_TQ", "SORG_KA", "SORG_KQ", "SORG_RA", "SORG_RQ", 
+                     "SORG_TA", "SORG_TQ", "PMLT_TA", "PMLT_TQ", "MAIZ_TA", "MAIZ_TQ", "FMLT_TA", "FMLT_TQ",
+                     "BRLY_TA", "BRLY_TQ", "CPEA_TA", "CPEA_TQ", "PPEA_TA", "PPEA_TQ", "GNUT_TA", "GNUT_TQ",
+                     "SESA_TA", "SESA_TQ", "RM_TA", "RM_TQ", "CAST_TA", "CAST_TQ", "LINS_TA", "LINS_TQ", 
+                     "SGUR_TQ", "COTN_TA", "COTN_TQ")
+
+fhp_crops <- c("RICE_TP", "PADY_TP", "WHT_TP", "SORG_TP", "PMLT_TP", "MAIZ_TP", "FMLT_TP", "BRLY_TP", 
+               "CPEA_TP", "PPEA_TP", "GNUT_TP", "SESA_TP", "RM_TP", "CAST_TP", "LINS_TP", "SGUR_TP", "COTNK_TP")
+
+# Extract crop types from the column names
+area_prod_crop_types <- unique(sub("_.*", "", area_prod_crops))
+fhp_crop_types <- unique(sub("_.*", "", fhp_crops))
+
+common_crop_types <- intersect(area_prod_crop_types, fhp_crop_types)
+
+# Filter columns based on common crop types
+common_columns_area_prod <- names(df_area_prod)[names(df_area_prod) %in% area_prod_crops]
+common_columns_fhp <- names(df_fhp)[names(df_fhp) %in% fhp_crops]
+
+merged_df <- inner_join(df_area_prod[, c('STCODE', 'DIST', 'DISTNAME', 'YEAR', common_columns_area_prod)],
+                        df_fhp[, c('STCODE', 'DIST', 'DISTNAME', 'YEAR', common_columns_fhp)],
+                        by = c('STCODE', 'DIST', 'DISTNAME', 'YEAR'))
+
+merged_df <- rename(merged_df, COTN_TP = "COTNK_TP")
+
+# Create a function to calculate W1 and S1
+calculate_W1_S1 <- function(df, crop_suffix) {
+  W1_col_name <- paste0("W1_", crop_suffix)
+  S1_col_name <- paste0("S1_", crop_suffix)
+  production_col <- paste0(crop_suffix, "_TQ")
+  price_col <- paste0(crop_suffix, "_TP")
+  
+  df <- df %>%
+    mutate(!!W1_col_name := .data[[production_col]] / total_production,
+           !!S1_col_name := .data[[price_col]])
+  return(df)
+}
+
+# Calculate total production once
+merged_df <- merged_df %>%
+  mutate(total_production = rowSums(select(., ends_with("_TQ")), na.rm = TRUE))
+
+# List of crop suffixes
+crop_suffixes <- c("RICE", "WHT", "SORG", "PMLT", "MAIZ", "FMLT", "BRLY", 
+                   "CPEA", "PPEA", "GNUT", "SESA", "RM", "CAST", "LINS", 
+                   "SGUR", "COTN")
+for (crop_suffix in crop_suffixes) {
+  merged_df <- calculate_W1_S1(merged_df, crop_suffix)
+}
+
+# Select the final columns
+Dataset1 <- merged_df %>%
+  select(STCODE, DIST, DISTNAME, YEAR, 
+         starts_with("W1_"), starts_with("S1_"))
+
+
+
+### Function 2 ###
+
+fert_prices_df <- rename(dt_fert_prices_a_web)
+fert_consumption_df <- rename(dt_fert_consumption_a_web_1_)
+
+# Merge the two dataframes on STCODE, DIST, and YEAR
+fert_merged_df <- merge(fert_prices_df, fert_consumption_df, by = c("STCODE", "DIST", "DISTNAME", "YEAR"))
+
+# Calculate W_fertilizer,dt and S_fertilizer,dt
+Dataset2 <- fert_merged_df %>%
+  mutate(W_fertilizer_N = N_TC / NPK_TC,
+         S_fertilizer_N = N_TP,
+         W_fertilizer_P = P_TC / NPK_TC,
+         S_fertilizer_P = P_TP,
+         W_fertilizer_K = K_TC / NPK_TC,
+         S_fertilizer_K = K_TP) %>%
+  group_by(STCODE, DIST, DISTNAME, YEAR) %>%
+  summarise(W_fertilizer_N = mean(W_fertilizer_N, na.rm = TRUE),
+            S_fertilizer_N = mean(S_fertilizer_N, na.rm = TRUE),
+            W_fertilizer_P = mean(W_fertilizer_P, na.rm = TRUE),
+            S_fertilizer_P = mean(S_fertilizer_P, na.rm = TRUE),
+            W_fertilizer_K = mean(W_fertilizer_K, na.rm = TRUE),
+            S_fertilizer_K = mean(S_fertilizer_K, na.rm = TRUE)) %>%
+  ungroup()  # Ungroup to avoid grouping affect on subsequent operations
+
+### Function 3 ###
+dt_normal_rainfall <- rename(dt_june_julyaug_rainfall_a_web)
+dt_population <- rename(dt_population_a_web)
+dt_nca_gca_nia_gia <- rename(dt_nca_gca_nia_gia_a_web)
+dt_wages <- rename(dt_wages_a_web)
+
+#Dataset3 <- reduce(list(dt_normal_rainfall, dt_population, dt_nca_gca_nia_gia, dt_wages), full_join, by = c("STCODE", "DIST", "DISTNAME", "YEAR"))
+dt3 <- merge(dt_population, dt_nca_gca_nia_gia, by = c("STCODE", "DIST", "DISTNAME", "YEAR", "STNAME"))
+dt3 <- merge(dt3, dt_wages, by = c("STCODE", "DIST", "DISTNAME", "YEAR","STNAME"))
+dt3 <- merge(dt3, dt_normal_rainfall, by = c("STCODE", "DIST", "DISTNAME", "YEAR","STNAME"))
+
+# Calculate the additional columns required
+Dataset3 <- dt3 %>%
+  mutate(
+    W_3_1 = AGRL_T / POP_T,  # Agricultural to total population ratio
+    S_3_1_M = MALE_WAGE,        # Male wage
+    S_3_1_F = FEM_WAGE,         # Female wage
+    W_3_2 = 1 - (NIA / NCA), # Normalized irrigated to cultivated area ratio
+    #S_3_2 = ANNUAL              # Annual rainfall
+  ) %>%
+  group_by(STCODE, DIST, DISTNAME, YEAR) %>%
+  summarise(
+    W_3_1 = mean(W_3_1, na.rm = TRUE),
+    S_3_1_M = mean(S_3_1_M, na.rm = TRUE),
+    S_3_1_F = mean(S_3_1_F, na.rm = TRUE),
+    W_3_2 = mean(W_3_2, na.rm = TRUE),
+    #S_3_2 = mean(S_3_2, na.rm = TRUE)
+  ) %>%
+  ungroup()  # Ungroup to avoid grouping affecting subsequent operations
