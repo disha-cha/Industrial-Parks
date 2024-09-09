@@ -1,0 +1,89 @@
+install.packages(c("sf", "data.table", "dplyr","haven","tidyr","sp"))
+library(sf)
+library(data.table)
+library(dplyr)
+library(haven)
+library(tidyr)
+library(sp)
+
+pc91_data <- read_dta("C:/Users/14084/Downloads/pc91_pca_clean_shrid.dta")
+pc01_data <- read_dta("C:/Users/14084/Downloads/pc01_pca_clean_shrid.dta")
+pc11_data <- read_dta("C:/Users/14084/Downloads/pc11_pca_clean_shrid.dta")
+shrid2_spatial_stats <- read_dta("C:/Users/14084/Downloads/shrid2_spatial_stats.dta")
+
+# Join the dataframes
+joined_data <- pc01_data %>%
+  inner_join(shrid2_spatial_stats, by = "shrid2")
+
+# Convert joined_data to an sf object
+joined_sf <- st_as_sf(joined_data, coords = c("longitude", "latitude"), crs = 32633, remove = FALSE)
+
+
+# Initialize columns for the final dataset
+joined_sf$tdist_10 <- NA  
+joined_sf$tdist_10_shrid <- NA  
+joined_sf$tdist_50 <- NA  
+joined_sf$tdist_50_shrid <- NA  
+joined_sf$tdist_100 <- NA  
+joined_sf$tdist_100_shrid <- NA  
+joined_sf$tdist_500 <- NA  
+joined_sf$tdist_500_shrid <- NA  
+
+# Population thresholds
+pop_thresholds <- c(10^4, 5*10^4, 10^5, 5*10^5)
+threshold_labels <- c("10", "50", "100", "500")
+
+for(i in 1:length(pop_thresholds)) {
+  # Filter target_sf for each threshold
+  target_sf <- filter(joined_sf, pc01_pca_tot_p >= pop_thresholds[i])
+  
+  # Find nearest features
+  nearest_indices <- st_nearest_feature(joined_sf, target_sf,longlat = F)
+  
+  # Update nearest SHRID and distances (converted to kilometers)
+  joined_sf[[paste0("tdist_", threshold_labels[i],"_shrid")]] <- target_sf$shrid2[nearest_indices]
+  distances <- as.numeric(st_distance(joined_sf, target_sf[nearest_indices, ], by_element = TRUE))
+  
+  
+  joined_sf[[paste0("tdist_", threshold_labels[i])]] <- distances
+}
+
+# Select and rename columns for final output
+final_pc01 <- select(joined_sf, shrid2,
+                     tdist_10_shrid, tdist_10,
+                     tdist_50_shrid, tdist_50,
+                     tdist_100_shrid, tdist_100,
+                     tdist_500_shrid, tdist_500)
+final_pc01$geometry <- NULL
+
+
+# Checks
+
+pc11_rounded <- final_pc11 %>%
+  mutate(
+    tdist_10 = round(tdist_10, 2),
+    tdist_50 = round(tdist_50, 2),
+    tdist_100 = round(tdist_100, 2),
+    tdist_500 = round(tdist_500, 2)
+  )
+
+ss_rounded <- shrid2_spatial_stats %>%
+  mutate(
+    tdist_10 = round(tdist_10, 2),
+    tdist_50 = round(tdist_50, 2),
+    tdist_100 = round(tdist_100, 2),
+    tdist_500 = round(tdist_500, 2)
+  )
+
+# Join the rounded data frames on 'shrid2'
+comparison_df <- inner_join(pc11_rounded, ss_rounded, by = "shrid2", suffix = c("_df1", "_df2"))
+
+# Find rows where the distances do not match
+mismatched_rows <- comparison_df %>%
+  filter(tdist_10_df1 != tdist_10_df2 |
+           tdist_50_df1 != tdist_50_df2 |
+           tdist_100_df1 != tdist_100_df2 |
+           tdist_500_df1 != tdist_500_df2)
+
+# Count the number of rows with mismatches
+num_mismatched_rows <- nrow(mismatched_rows)
